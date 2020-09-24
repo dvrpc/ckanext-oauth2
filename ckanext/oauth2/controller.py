@@ -21,14 +21,14 @@
 from __future__ import unicode_literals
 
 import logging
-import constants
 
 from ckan.common import session
-import ckan.lib.helpers as helpers
 import ckan.lib.base as base
+import ckan.lib.helpers as helpers
 import ckan.plugins.toolkit as toolkit
-import oauth2
 
+from ckanext.oauth2 import oauth2
+from ckanext.oauth2 import constants
 from ckanext.oauth2.plugin import _get_previous_page
 
 
@@ -36,12 +36,11 @@ log = logging.getLogger(__name__)
 
 
 class OAuth2Controller(base.BaseController):
-
     def __init__(self):
         self.oauth2helper = oauth2.OAuth2Helper()
 
     def login(self):
-        log.debug('login')
+        log.debug("login")
 
         # Log in attemps are fired when the user is not logged in and they click
         # on the log in button
@@ -65,19 +64,19 @@ class OAuth2Controller(base.BaseController):
             session.save()
 
             # If the callback is called with an error, we must show the message
-            error_description = toolkit.request.GET.get('error_description')
+            error_description = toolkit.request.GET.get("error_description")
             if not error_description:
                 if e.message:
                     error_description = e.message
-                elif hasattr(e, 'description') and e.description:
+                elif hasattr(e, "description") and e.description:
                     error_description = e.description
-                elif hasattr(e, 'error') and e.error:
+                elif hasattr(e, "error") and e.error:
                     error_description = e.error
                 else:
                     error_description = type(e).__name__
 
             toolkit.response.status_int = 302
-            redirect_url = oauth2.get_came_from(toolkit.request.params.get('state'))
-            redirect_url = '/' if redirect_url == constants.INITIAL_PAGE else redirect_url
+            redirect_url = oauth2.get_came_from(toolkit.request.params.get("state"))
+            redirect_url = "/" if redirect_url == constants.INITIAL_PAGE else redirect_url
             toolkit.response.location = redirect_url
             helpers.flash_error(error_description)

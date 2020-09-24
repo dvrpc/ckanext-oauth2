@@ -20,15 +20,16 @@
 
 from __future__ import unicode_literals
 
-import logging
-import oauth2
-import os
-
 from functools import partial
+import logging
+import os
+from urllib.parse import urlparse
+
 from ckan import plugins
 from ckan.common import g
 from ckan.plugins import toolkit
-from urlparse import urlparse
+
+from ckanext.oauth2 import oauth2
 
 log = logging.getLogger(__name__)
 

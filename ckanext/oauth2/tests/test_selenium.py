@@ -20,11 +20,11 @@
 
 from __future__ import print_function
 
-import unittest
 import os
 from subprocess import Popen
 import time
-from urlparse import urljoin
+import unittest
+from urllib.parse import urljoin
 
 from parameterized import parameterized
 import requests
