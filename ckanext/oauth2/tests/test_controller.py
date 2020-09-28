@@ -29,18 +29,18 @@ from ckanext.oauth2 import controller, plugin
 
 
 RETURNED_STATUS = 302
-EXAMPLE_FLASH = 'This is a test'
-EXCEPTION_MSG = 'Invalid'
-CAME_FROM_FIELD = 'came_from'
+EXAMPLE_FLASH = "This is a test"
+EXCEPTION_MSG = "Invalid"
+CAME_FROM_FIELD = "came_from"
 
 
 class CompleteException(Exception):
-    description = 'Exception description'
-    error = 'Exception error'
+    description = "Exception description"
+    error = "Exception error"
 
 
 class ErrorException(Exception):
-    error = 'Exception error 2'
+    error = "Exception error 2"
 
 
 class VoidException(Exception):
@@ -48,7 +48,6 @@ class VoidException(Exception):
 
 
 class OAuth2PluginTest(unittest.TestCase):
-
     def setUp(self):
         # Save the response, the request and the helper functions and mock them
         self._helpers = controller.helpers
@@ -78,13 +77,13 @@ class OAuth2PluginTest(unittest.TestCase):
         return b64encode(bytes(json.dumps({CAME_FROM_FIELD: url})))
 
     def get_came_from(self, state):
-        return json.loads(b64decode(state)).get(CAME_FROM_FIELD, '/')
+        return json.loads(b64decode(state)).get(CAME_FROM_FIELD, "/")
 
     def test_callback_no_errors(self):
         oauth2Helper = controller.oauth2.OAuth2Helper.return_value
 
-        token = 'TOKEN'
-        user_id = 'user_id'
+        token = "TOKEN"
+        user_id = "user_id"
         oauth2Helper.get_token.return_value = token
         oauth2Helper.identify.return_value = user_id
 
@@ -97,19 +96,26 @@ class OAuth2PluginTest(unittest.TestCase):
         oauth2Helper.update_token.assert_called_once_with(user_id, token)
         oauth2Helper.redirect_from_callback.assert_called_once_with()
 
-    @parameterized.expand([
-        (),
-        ('/',),
-        ('/', CompleteException(EXCEPTION_MSG), None, EXCEPTION_MSG),
-        ('/', CompleteException(), None, CompleteException.description),
-        ('/', ErrorException(EXCEPTION_MSG), None, EXCEPTION_MSG),
-        ('/', ErrorException(), None, ErrorException.error),
-        ('/', VoidException(EXCEPTION_MSG), None, EXCEPTION_MSG),
-        ('/', VoidException(), None, type(VoidException()).__name__),
-        ('/about', Exception(EXCEPTION_MSG), EXAMPLE_FLASH, EXAMPLE_FLASH)
-    ])
-    def test_callback_errors(self, came_from=None, exception=Exception(EXCEPTION_MSG),
-                               error_description=None, expected_flash=EXCEPTION_MSG):
+    @parameterized.expand(
+        [
+            (),
+            ("/",),
+            ("/", CompleteException(EXCEPTION_MSG), None, EXCEPTION_MSG),
+            ("/", CompleteException(), None, CompleteException.description),
+            ("/", ErrorException(EXCEPTION_MSG), None, EXCEPTION_MSG),
+            ("/", ErrorException(), None, ErrorException.error),
+            ("/", VoidException(EXCEPTION_MSG), None, EXCEPTION_MSG),
+            ("/", VoidException(), None, type(VoidException()).__name__),
+            ("/about", Exception(EXCEPTION_MSG), EXAMPLE_FLASH, EXAMPLE_FLASH),
+        ]
+    )
+    def test_callback_errors(
+        self,
+        came_from=None,
+        exception=Exception(EXCEPTION_MSG),
+        error_description=None,
+        expected_flash=EXCEPTION_MSG,
+    ):
 
         # Recover function
         controller.oauth2.get_came_from = self.get_came_from
@@ -118,9 +124,9 @@ class OAuth2PluginTest(unittest.TestCase):
         oauth2Helper.get_token.side_effect = exception
 
         controller.toolkit.request.GET = {}
-        controller.toolkit.request.GET['state'] = self.generate_state(came_from)
+        controller.toolkit.request.GET["state"] = self.generate_state(came_from)
         if error_description is not None:
-            controller.toolkit.request.GET['error_description'] = error_description
+            controller.toolkit.request.GET["error_description"] = error_description
         controller.toolkit.request.params.get = controller.toolkit.request.GET.get
 
         # Call the controller
@@ -132,30 +138,32 @@ class OAuth2PluginTest(unittest.TestCase):
         self.assertEquals(came_from, controller.toolkit.response.location)
         controller.helpers.flash_error.assert_called_once_with(expected_flash)
 
-    @parameterized.expand([
-        (),
-        (None,                        None,               '/dashboard'),
-        ('/about',                    None,               '/about'),
-        ('/about',                    '/ckan-admin',      '/ckan-admin'),
-        (None,                        '/ckan-admin',      '/ckan-admin'),
-        ('/',                         None,               '/dashboard'),
-        ('/user/logged_out_redirect', None,               '/dashboard'),
-        ('/',                         '/ckan-admin',      '/ckan-admin'),
-        ('/user/logged_out_redirect', '/ckan-admin',      '/ckan-admin'),
-        ('http://google.es',          None,               '/dashboard'),
-        ('http://google.es',          None,               '/dashboard')
-    ])
-    def test_login(self, referer=None, came_from=None, expected_referer='/dashboard'):
+    @parameterized.expand(
+        [
+            (),
+            (None, None, "/dashboard"),
+            ("/about", None, "/about"),
+            ("/about", "/ckan-admin", "/ckan-admin"),
+            (None, "/ckan-admin", "/ckan-admin"),
+            ("/", None, "/dashboard"),
+            ("/user/logged_out_redirect", None, "/dashboard"),
+            ("/", "/ckan-admin", "/ckan-admin"),
+            ("/user/logged_out_redirect", "/ckan-admin", "/ckan-admin"),
+            ("http://google.es", None, "/dashboard"),
+            ("http://google.es", None, "/dashboard"),
+        ]
+    )
+    def test_login(self, referer=None, came_from=None, expected_referer="/dashboard"):
 
         # The login function will check these variables
         controller.toolkit.request.headers = {}
         controller.toolkit.request.params = {}
 
         if referer:
-            controller.toolkit.request.headers['Referer'] = referer
+            controller.toolkit.request.headers["Referer"] = referer
 
         if came_from:
-            controller.toolkit.request.params['came_from'] = came_from
+            controller.toolkit.request.params["came_from"] = came_from
 
         # Call the function
         self.controller.login()

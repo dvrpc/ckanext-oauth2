@@ -24,7 +24,6 @@ from mock import MagicMock
 
 
 class DBTest(unittest.TestCase):
-
     def setUp(self):
         # Restart databse initial status
         db.UserToken = None
