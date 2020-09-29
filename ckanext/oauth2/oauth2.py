@@ -176,11 +176,10 @@ class OAuth2Helper:
         log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
         # CKAN 2.6 only supports bytes
         # return toolkit.redirect_to(auth_url.encode("utf-8"))
-        # return toolkit.redirect_to(auth_url)
-        print(auth_url)
-        return redirect(auth_url)
+        return toolkit.redirect_to(auth_url)
 
     def get_token(self):
+        print("hello from oauth2.py get_token()")
         oauth = OAuth2Session(self.client_id, redirect_uri=self.redirect_uri, scope=self.scope)
 
         # Just because of FIWARE Authentication
@@ -312,6 +311,7 @@ class OAuth2Helper:
 
     def redirect_from_callback(self):
         """Redirect to the callback URL after a successful authentication."""
+        print("hello from oauth2.py redirect_from_callback()")
         state = toolkit.request.params.get("state")
         came_from = get_came_from(state)
         toolkit.response.status = 302

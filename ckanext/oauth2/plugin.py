@@ -20,21 +20,41 @@
 
 from __future__ import unicode_literals
 
+from base64 import b64encode
 from functools import partial
 import logging
+import json
 import os
 from urllib.parse import urlparse
 
-from flask import Blueprint, redirect, request
+from flask import Blueprint
+from requests_oauthlib import OAuth2Session
+import six
+from six.moves.urllib.parse import urljoin
 
 from ckan import plugins
 from ckan.common import g, session
 from ckan.lib import helpers
+import ckan.model as model
 from ckan.plugins import toolkit
 
-from ckanext.oauth2 import constants, oauth2
+from ckanext.oauth2 import constants, oauth2, db
 
 log = logging.getLogger(__name__)
+
+REQUIRED_CONF = (
+    "authorization_endpoint",
+    "token_endpoint",
+    "client_id",
+    "client_secret",
+    "profile_api_url",
+    "profile_api_user_field",
+    "profile_api_mail_field",
+)
+
+
+def generate_state(url):
+    return b64encode(json.dumps({constants.CAME_FROM_FIELD: url}).encode())
 
 
 def _no_permissions(context, msg):
@@ -98,8 +118,102 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         """Store the OAuth 2 client configuration"""
         log.debug("Init OAuth2 extension")
 
-        self.oauth2helper = oauth2.OAuth2Helper()
+        self.verify_https = os.environ.get("OAUTHLIB_INSECURE_TRANSPORT", "") == ""
+        if self.verify_https and os.environ.get("REQUESTS_CA_BUNDLE", "").strip() != "":
+            self.verify_https = os.environ["REQUESTS_CA_BUNDLE"].strip()
 
+        self.jwt_enable = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_JWT_ENABLE", toolkit.config.get("ckan.oauth2.jwt.enable", "")
+            )
+        ).strip().lower() in ("true", "1", "on")
+
+        self.legacy_idm = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_LEGACY_IDM", toolkit.config.get("ckan.oauth2.legacy_idm", "")
+            )
+        ).strip().lower() in ("true", "1", "on")
+        self.authorization_endpoint = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_AUTHORIZATION_ENDPOINT",
+                toolkit.config.get("ckan.oauth2.authorization_endpoint", ""),
+            )
+        ).strip()
+        self.token_endpoint = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_TOKEN_ENDPOINT",
+                toolkit.config.get("ckan.oauth2.token_endpoint", ""),
+            )
+        ).strip()
+        self.profile_api_url = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_PROFILE_API_URL", toolkit.config.get("ckan.oauth2.profile_api_url", "")
+            )
+        ).strip()
+        self.client_id = six.text_type(
+            os.environ.get("CKAN_OAUTH2_CLIENT_ID", toolkit.config.get("ckan.oauth2.client_id", ""))
+        ).strip()
+        self.client_secret = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_CLIENT_SECRET", toolkit.config.get("ckan.oauth2.client_secret", "")
+            )
+        ).strip()
+        self.scope = six.text_type(
+            os.environ.get("CKAN_OAUTH2_SCOPE", toolkit.config.get("ckan.oauth2.scope", ""))
+        ).strip()
+        self.rememberer_name = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_REMEMBER_NAME",
+                toolkit.config.get("ckan.oauth2.rememberer_name", "auth_tkt"),
+            )
+        ).strip()
+        self.profile_api_user_field = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_PROFILE_API_USER_FIELD",
+                toolkit.config.get("ckan.oauth2.profile_api_user_field", ""),
+            )
+        ).strip()
+        self.profile_api_fullname_field = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_PROFILE_API_FULLNAME_FIELD",
+                toolkit.config.get("ckan.oauth2.profile_api_fullname_field", ""),
+            )
+        ).strip()
+        self.profile_api_mail_field = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_PROFILE_API_MAIL_FIELD",
+                toolkit.config.get("ckan.oauth2.profile_api_mail_field", ""),
+            )
+        ).strip()
+        self.profile_api_groupmembership_field = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_PROFILE_API_GROUPMEMBERSHIP_FIELD",
+                toolkit.config.get("ckan.oauth2.profile_api_groupmembership_field", ""),
+            )
+        ).strip()
+        self.sysadmin_group_name = six.text_type(
+            os.environ.get(
+                "CKAN_OAUTH2_SYSADMIN_GROUP_NAME",
+                toolkit.config.get("ckan.oauth2.sysadmin_group_name", ""),
+            )
+        ).strip()
+
+        self.redirect_uri = urljoin(
+            urljoin(
+                toolkit.config.get("ckan.site_url", "http://localhost:5000"),
+                toolkit.config.get("ckan.root_path"),
+            ),
+            constants.REDIRECT_URL,
+        )
+
+        # Init db
+        db.init_db(model)
+
+        missing = [key for key in REQUIRED_CONF if getattr(self, key, "") == ""]
+        if missing:
+            raise ValueError("Missing required oauth2 conf: %s" % ", ".join(missing))
+        elif self.scope == "":
+            self.scope = None
         """
         # these still need to be added as rules to the blueprint
         # Redirect the user to the OAuth service register page
@@ -138,10 +252,24 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         # When the user is not logged in, he/she should be redirected to the dashboard when
         # the system cannot get the previous page
         came_from_url = _get_previous_page(constants.INITIAL_PAGE)
+        print("came_from_url: ", came_from_url)
 
-        self.oauth2helper.challenge(came_from_url)
+        # self.oauth2helper.challenge(came_from_url)
+
+        # KW: copied this over from oauth2.py challenge
+        # This function is called by the log in function when the user is not logged in
+        state = generate_state(came_from_url)
+        oauth = OAuth2Session(
+            self.client_id, redirect_uri=self.redirect_uri, scope=self.scope, state=state
+        )
+        auth_url, _ = oauth.authorization_url(self.authorization_endpoint)
+        log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
+        # CKAN 2.6 only supports bytes
+        # return toolkit.redirect_to(auth_url.encode("utf-8"))
+        return toolkit.redirect_to(auth_url)
 
     def callback(self):
+        print("hello from plugin.py callback()")
         try:
             token = self.oauth2helper.get_token()
             user_name = self.oauth2helper.identify(token)
@@ -170,6 +298,8 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             toolkit.response.location = redirect_url
             helpers.flash_error(error_description)
 
+        return
+
     def identify(self):
         log.debug("identify")
         print("hello from plugin.py identify()")
@@ -182,10 +312,8 @@ class OAuth2Plugin(plugins.SingletonPlugin):
                 toolkit.g.usertoken = new_token
 
         environ = toolkit.request.environ
-        print("environ: ", environ)
-        print("toolkit.request.headers: ", toolkit.request.headers)
-        # apikey = toolkit.request.headers.get(self.authorization_header, "")
-        apikey = request.headers.get(self.authorization_header, "")
+        apikey = toolkit.request.headers.get(self.authorization_header, "")
+        print("apikey: ", apikey)
         user_name = None
         print("authorization header: ", self.authorization_header)
 

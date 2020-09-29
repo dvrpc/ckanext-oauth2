@@ -328,7 +328,7 @@ class OAuth2PluginTest(unittest.TestCase):
             "https://test/oauth2/authorize/?response_type=code&client_id=client-id&"
             + "redirect_uri=http%3A%2F%2Flocalhost%3A5000%2Foauth2%2Fcallback&"
             + state
-        ).encode()
+        )
         oauth2.toolkit.redirect_to.assert_called_once_with(expected_url)
 
     @parameterized.expand(
