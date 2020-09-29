@@ -17,7 +17,7 @@
 
 # You should have received a copy of the GNU Affero General Public License
 # along with OAuth2 CKAN Extension.  If not, see <http://www.gnu.org/licenses/>.
-
+"""
 from __future__ import unicode_literals
 
 import logging
@@ -80,3 +80,4 @@ class OAuth2Controller(base.BaseController):
             redirect_url = "/" if redirect_url == constants.INITIAL_PAGE else redirect_url
             toolkit.response.location = redirect_url
             helpers.flash_error(error_description)
+"""

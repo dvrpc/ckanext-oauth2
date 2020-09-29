@@ -34,6 +34,9 @@ from requests_oauthlib import OAuth2Session
 import six
 from six.moves.urllib.parse import urljoin
 
+from flask import redirect
+
+from ckan.common import config
 import ckan.model as model
 from ckan.plugins import toolkit
 
@@ -88,7 +91,8 @@ class OAuth2Helper:
         ).strip()
         self.token_endpoint = six.text_type(
             os.environ.get(
-                "CKAN_OAUTH2_TOKEN_ENDPOINT", toolkit.config.get("ckan.oauth2.token_endpoint", "")
+                "CKAN_OAUTH2_TOKEN_ENDPOINT",
+                toolkit.config.get("ckan.oauth2.token_endpoint", ""),
             )
         ).strip()
         self.profile_api_url = six.text_type(
@@ -162,6 +166,7 @@ class OAuth2Helper:
             self.scope = None
 
     def challenge(self, came_from_url):
+        print("hello from oauth2.py challenge()")
         # This function is called by the log in function when the user is not logged in
         state = generate_state(came_from_url)
         oauth = OAuth2Session(
@@ -170,7 +175,10 @@ class OAuth2Helper:
         auth_url, _ = oauth.authorization_url(self.authorization_endpoint)
         log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
         # CKAN 2.6 only supports bytes
-        return toolkit.redirect_to(auth_url.encode("utf-8"))
+        # return toolkit.redirect_to(auth_url.encode("utf-8"))
+        # return toolkit.redirect_to(auth_url)
+        print(auth_url)
+        return redirect(auth_url)
 
     def get_token(self):
         oauth = OAuth2Session(self.client_id, redirect_uri=self.redirect_uri, scope=self.scope)
@@ -207,7 +215,7 @@ class OAuth2Helper:
         return token
 
     def identify(self, token):
-
+        print("hello from oauth2.py identify()")
         if self.jwt_enable:
 
             access_token = token["access_token"]
