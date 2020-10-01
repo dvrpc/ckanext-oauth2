@@ -67,7 +67,7 @@ def get_came_from(state):
     return json.loads(base64.b64decode(state)).get(CAME_FROM_FIELD, "/")
 
 
-def _no_permissions(context, msg):
+def no_permissions(context, msg):
     user = context["user"]
     return {"success": False, "msg": msg.format(user=user)}
 
@@ -75,28 +75,29 @@ def _no_permissions(context, msg):
 @toolkit.auth_sysadmins_check
 def user_create(context, data_dict):
     msg = toolkit._("Users cannot be created.")
-    return _no_permissions(context, msg)
+    return no_permissions(context, msg)
 
 
 @toolkit.auth_sysadmins_check
 def user_update(context, data_dict):
     msg = toolkit._("Users cannot be edited.")
-    return _no_permissions(context, msg)
+    return no_permissions(context, msg)
 
 
 @toolkit.auth_sysadmins_check
 def user_reset(context, data_dict):
     msg = toolkit._("Users cannot reset passwords.")
-    return _no_permissions(context, msg)
+    return no_permissions(context, msg)
 
 
 @toolkit.auth_sysadmins_check
 def request_reset(context, data_dict):
     msg = toolkit._("Users cannot reset passwords.")
-    return _no_permissions(context, msg)
+    return no_permissions(context, msg)
 
 
-def _get_previous_page(default_page):
+def get_previous_page(default_page=INITIAL_PAGE):
+    """Get page user attempts to log in from, or dashboard if unable to/in certain circumstances."""
     if "came_from" not in toolkit.request.params:
         came_from_url = toolkit.request.headers.get("Referer", default_page)
     else:
@@ -108,8 +109,7 @@ def _get_previous_page(default_page):
     if came_from_url_parsed.netloc != "" and came_from_url_parsed.netloc != toolkit.request.host:
         came_from_url = default_page
 
-    # When a user is being logged and REFERER == HOME or LOGOUT_PAGE
-    # he/she must be redirected to the dashboard
+    # When user is being logged in and REFERER == HOME or LOGOUT_PAGE, redirect to dashboard
     pages = ["/", "/user/logged_out_redirect"]
     if came_from_url_parsed.path in pages:
         came_from_url = default_page
@@ -135,10 +135,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         self.jwt_enable = os.environ.get(
             "CKAN_OAUTH2_JWT_ENABLE", toolkit.config.get("ckan.oauth2.jwt.enable", "")
-        ).strip().lower() in ("true", "1", "on")
-
-        self.legacy_idm = os.environ.get(
-            "CKAN_OAUTH2_LEGACY_IDM", toolkit.config.get("ckan.oauth2.legacy_idm", "")
         ).strip().lower() in ("true", "1", "on")
 
         self.authorization_endpoint = os.environ.get(
@@ -229,6 +225,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         """
 
     def get_blueprint(self):
+        """Create Flask blueprint."""
         blueprint = Blueprint("oauth2", self.__module__)
         rules = [
             ("/user/login", "login", self.login),
@@ -241,7 +238,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         return blueprint
 
     def get_auth_functions(self):
-        # we need to prevent some actions being authorized.
+        """Prevent some actions from being authorized."""
         return {
             "user_create": user_create,
             "user_update": user_update,
@@ -250,7 +247,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         }
 
     def update_config(self, config):
-        # Update our configuration
+        """Update configuration."""
         self.register_url = os.environ.get(
             "CKAN_OAUTH2_REGISTER_URL", config.get("ckan.oauth2.register_url", None)
         )
@@ -265,43 +262,38 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             config.get("ckan.oauth2.authorization_header", "Authorization"),
         ).lower()
 
-        # Add this plugin's templates dir to CKAN's extra_template_paths, so
-        # that CKAN will use this plugin's custom templates.
+        # Add plugin's templates dir to CKAN's extra_template_paths, so CKAN will use them
         plugins.toolkit.add_template_directory(config, "templates")
 
     def login(self):
+        """Start log in process."""
         log.debug("login")
 
-        # Log in attemps are fired when the user is not logged in and they click
-        # on the log in button
-
-        # Get the page where the user was when the loggin attemp was fired
-        # When the user is not logged in, he/she should be redirected to the dashboard when
-        # the system cannot get the previous page
-        came_from_url = _get_previous_page(INITIAL_PAGE)
-
-        # This function is called by the log in function when the user is not logged in
-        state = generate_state(came_from_url)
+        state = generate_state(get_previous_page())
         oauth = OAuth2Session(
             self.client_id, redirect_uri=self.redirect_uri, scope=self.scope, state=state
         )
         auth_url, _ = oauth.authorization_url(self.authorization_endpoint)
-        log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
-        # CKAN 2.6 only supports bytes
-        # return toolkit.redirect_to(auth_url.encode("utf-8"))
+        log.debug(f"Challenge: Redirecting challenge to page {auth_url}")
+
         return toolkit.redirect_to(auth_url)
 
     def callback(self):
-        # this was originally in controller.py
+        """Resume login process from authorization service."""
+        log.debug("callback")
         try:
             token = self.get_token()
-        except Exception as e:
-            print(e)
+        except InsecureTransportError as e:
+            log.warn(f"Error in getting token: {e}")
+            helpers.flash_error("Authentication error; please contact the administrator.")
+            return toolkit.redirect_to("/")
 
         try:
             user_name = self.authenticate(token)
-        except Exception as e:
-            print(e)
+        except InsecureTransportError as e:
+            log.warn(f"Error authenticating user: {e}")
+            helpers.flash_error("Authentication error; please contact the administrator.")
+            return toolkit.redirect_to("/")
 
         # create headers from remember token to be added to redirected response
         remember_headers = self.remember(user_name)
@@ -314,35 +306,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             redirect.headers[header] = value
 
         return redirect
-
-        """
-        # commenting this out to have smaller try/excepts
-        except Exception as e:
-            print(e)
-            session.save()
-
-            # If the callback is called with an error, we must show the message
-            # error_description = toolkit.request.GET.get("error_description")
-            error_description = toolkit.request.get_data("error_description")
-            print(error_description)
-            if not error_description:
-                if e.message:
-                    error_description = e.message
-                elif hasattr(e, "description") and e.description:
-                    error_description = e.description
-                elif hasattr(e, "error") and e.error:
-                    error_description = e.error
-                else:
-                    error_description = type(e).__name__
-
-            toolkit.response.status_int = 302
-            redirect_url = get_came_from(toolkit.request.params.get("state"))
-            redirect_url = "/" if redirect_url == INITIAL_PAGE else redirect_url
-            toolkit.response.location = redirect_url
-            helpers.flash_error(error_description)
-
-        return
-        """
 
     def identify(self):
         log.debug("identify")
@@ -374,7 +337,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         # If the authentication via API fails, we can still log in the user using session.
         if user_name is None and "repoze.who.identity" in environ:
             user_name = environ["repoze.who.identity"]["repoze.who.userid"]
-            log.info("User %s logged using session" % user_name)
+            log.info(f"User {user_name} logged using session")
         # If we have been able to log in the user (via API or Session)
         if user_name:
             g.user = user_name
@@ -386,75 +349,43 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             toolkit.g.usertoken_refresh = partial(_refresh_and_save_token, user_name)
         else:
             g.user = None
-            log.warn("The user is not currently logged...")
+            log.warn("The user is not currently logged in...")
 
     def get_token(self):
-
+        """Get token from authorization service."""
+        log.debug("get_token")
         oauth = OAuth2Session(self.client_id, redirect_uri=self.redirect_uri, scope=self.scope)
-        # Just because of FIWARE Authentication
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-
-        if self.legacy_idm:
-            # This is only required for Keyrock v6 and v5
-            # headers['Authorization'] = 'Basic %s' % base64.urlsafe_b64encode(
-            #     '%s:%s' % (self.client_id, self.client_secret)
-            # )
-            authorization = "Basic " + self.client_id + ":" + self.client_secret
-            headers["Authorization"] = base64.urlsafe_b64encode(authorization.encode())
 
         try:
-
-            # NOTE: authorization_response/tookkit.request.url was causing the error - using
-            # http instead of https
+            # NOTE: authorization_response/toolkit.request.url was using http instead of https
             # hacked to replace http with https
             authorization_response = toolkit.request.url
             authorization_response = authorization_response.replace("http", "https")
             token = oauth.fetch_token(
                 self.token_endpoint,
-                headers=headers,
                 client_secret=self.client_secret,
                 authorization_response=authorization_response,
                 verify=self.verify_https,
             )
-        # NOTE: this exeption wasn't firing before even when there was an error, need to
-        # see what proper exception would be
-        except requests.exceptions.SSLError as e:
-            # TODO search a better way to detect invalid certificates
-            if "verify failed" in e.message:
-                raise InsecureTransportError()
-            else:
-                raise
+        except InsecureTransportError:
+            raise
+
         return token
 
     def authenticate(self, token):
-        # this had been the oauth2.py Oauth2Helper method identify()
+        log.debug("authenticate")
 
         if self.jwt_enable:
-
             access_token = token["access_token"]
             user_data = jwt.decode(access_token, verify=False)
             user = self.user_json(user_data)
         else:
 
             try:
-                if self.legacy_idm:
-                    profile_response = requests.get(
-                        self.profile_api_url + "?access_token=%s" % token["access_token"],
-                        verify=self.verify_https,
-                    )
-                else:
-                    oauth = OAuth2Session(self.client_id, token=token)
-                    profile_response = oauth.get(self.profile_api_url, verify=self.verify_https)
-
-            except requests.exceptions.SSLError as e:
-                # TODO search a better way to detect invalid certificates
-                if "verify failed" in e.message:
-                    raise InsecureTransportError()
-                else:
-                    raise
+                oauth = OAuth2Session(self.client_id, token=token)
+                profile_response = oauth.get(self.profile_api_url, verify=self.verify_https)
+            except InsecureTransportError:
+                raise
 
             # Token can be invalid
             if not profile_response.ok:
@@ -517,6 +448,8 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         Remember the authenticated identity.
 
         This method simply delegates to another IIdentifier plugin if configured.
+
+        Return headers so they can be added to redirected response.
         """
         log.debug("Repoze OAuth remember")
         environ = toolkit.request.environ
@@ -537,12 +470,13 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             }
 
     def update_token(self, user_name, token):
-
         user_token = db.UserToken.by_user_name(user_name=user_name)
+
         # Create the user if it does not exist
         if not user_token:
             user_token = db.UserToken()
             user_token.user_name = user_name
+
         # Save the new token
         user_token.access_token = token["access_token"]
         user_token.token_type = token["token_type"]
@@ -567,14 +501,10 @@ class OAuth2Plugin(plugins.SingletonPlugin):
                     client_id=self.client_id,
                     verify=self.verify_https,
                 )
-            except requests.exceptions.SSLError as e:
-                # TODO search a better way to detect invalid certificates
-                if "verify failed" in e.message:
-                    raise InsecureTransportError()
-                else:
-                    raise
+            except InsecureTransportError:
+                raise
             self.update_token(user_name, token)
-            log.info("Token for user %s has been updated properly" % user_name)
+            log.info(f"Token for user {user_name} has been updated properly")
             return token
         else:
-            log.warn("User %s has no refresh token" % user_name)
+            log.warn(f"User {user_name} has no refresh token")
