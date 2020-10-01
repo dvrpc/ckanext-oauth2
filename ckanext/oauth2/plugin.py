@@ -20,14 +20,17 @@
 
 from __future__ import unicode_literals
 
-from base64 import b64encode
+import base64
 from functools import partial
-import logging
 import json
+import logging
 import os
 from urllib.parse import urlparse
 
 from flask import Blueprint
+import jwt
+from oauthlib.oauth2 import InsecureTransportError
+import requests
 from requests_oauthlib import OAuth2Session
 import six
 from six.moves.urllib.parse import urljoin
@@ -38,7 +41,7 @@ from ckan.lib import helpers
 import ckan.model as model
 from ckan.plugins import toolkit
 
-from ckanext.oauth2 import constants, oauth2, db
+from ckanext.oauth2 import constants, db
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +57,11 @@ REQUIRED_CONF = (
 
 
 def generate_state(url):
-    return b64encode(json.dumps({constants.CAME_FROM_FIELD: url}).encode())
+    return base64.b64encode(json.dumps({constants.CAME_FROM_FIELD: url}).encode())
+
+
+def get_came_from(state):
+    return json.loads(base64.b64decode(state)).get(constants.CAME_FROM_FIELD, "/")
 
 
 def _no_permissions(context, msg):
@@ -119,6 +126,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         log.debug("Init OAuth2 extension")
 
         self.verify_https = os.environ.get("OAUTHLIB_INSECURE_TRANSPORT", "") == ""
+
         if self.verify_https and os.environ.get("REQUESTS_CA_BUNDLE", "").strip() != "":
             self.verify_https = os.environ["REQUESTS_CA_BUNDLE"].strip()
 
@@ -241,116 +249,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         return blueprint
 
-    def login(self):
-        log.debug("login")
-        print("hello from plugin.py login()")
-
-        # Log in attemps are fired when the user is not logged in and they click
-        # on the log in button
-
-        # Get the page where the user was when the loggin attemp was fired
-        # When the user is not logged in, he/she should be redirected to the dashboard when
-        # the system cannot get the previous page
-        came_from_url = _get_previous_page(constants.INITIAL_PAGE)
-        print("came_from_url: ", came_from_url)
-
-        # self.oauth2helper.challenge(came_from_url)
-
-        # KW: copied this over from oauth2.py challenge
-        # This function is called by the log in function when the user is not logged in
-        state = generate_state(came_from_url)
-        oauth = OAuth2Session(
-            self.client_id, redirect_uri=self.redirect_uri, scope=self.scope, state=state
-        )
-        auth_url, _ = oauth.authorization_url(self.authorization_endpoint)
-        log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
-        # CKAN 2.6 only supports bytes
-        # return toolkit.redirect_to(auth_url.encode("utf-8"))
-        return toolkit.redirect_to(auth_url)
-
-    def callback(self):
-        print("hello from plugin.py callback()")
-        try:
-            token = self.oauth2helper.get_token()
-            user_name = self.oauth2helper.identify(token)
-            self.oauth2helper.remember(user_name)
-            self.oauth2helper.update_token(user_name, token)
-            self.oauth2helper.redirect_from_callback()
-        except Exception as e:
-
-            session.save()
-
-            # If the callback is called with an error, we must show the message
-            error_description = toolkit.request.GET.get("error_description")
-            if not error_description:
-                if e.message:
-                    error_description = e.message
-                elif hasattr(e, "description") and e.description:
-                    error_description = e.description
-                elif hasattr(e, "error") and e.error:
-                    error_description = e.error
-                else:
-                    error_description = type(e).__name__
-
-            toolkit.response.status_int = 302
-            redirect_url = oauth2.get_came_from(toolkit.request.params.get("state"))
-            redirect_url = "/" if redirect_url == constants.INITIAL_PAGE else redirect_url
-            toolkit.response.location = redirect_url
-            helpers.flash_error(error_description)
-
-        return
-
-    def identify(self):
-        log.debug("identify")
-        print("hello from plugin.py identify()")
-
-        def _refresh_and_save_token(user_name):
-            new_token = self.oauth2helper.refresh_token(user_name)
-            print("new_token: ", new_token)
-            if new_token:
-                # toolkit.c.usertoken = new_token
-                toolkit.g.usertoken = new_token
-
-        environ = toolkit.request.environ
-        apikey = toolkit.request.headers.get(self.authorization_header, "")
-        print("apikey: ", apikey)
-        user_name = None
-        print("authorization header: ", self.authorization_header)
-
-        if self.authorization_header == "authorization":
-            print("here")
-            if apikey.startswith("Bearer "):
-                apikey = apikey[7:].strip()
-            else:
-                apikey = ""
-
-        # This API Key is not the one of CKAN, it's the one provided by the OAuth2 Service
-        if apikey:
-            try:
-                token = {"access_token": apikey}
-                user_name = self.oauth2helper.identify(token)
-            except Exception:
-                pass
-
-        print("apikey: ", apikey)
-
-        # If the authentication via API fails, we can still log in the user using session.
-        if user_name is None and "repoze.who.identity" in environ:
-            user_name = environ["repoze.who.identity"]["repoze.who.userid"]
-            log.info("User %s logged using session" % user_name)
-        # If we have been able to log in the user (via API or Session)
-        if user_name:
-            g.user = user_name
-            # toolkit.c.user = user_name
-            # toolkit.c.usertoken = self.oauth2helper.get_stored_token(user_name)
-            # toolkit.c.usertoken_refresh = partial(_refresh_and_save_token, user_name)
-            toolkit.g.user = user_name
-            toolkit.g.usertoken = self.oauth2helper.get_stored_token(user_name)
-            toolkit.g.usertoken_refresh = partial(_refresh_and_save_token, user_name)
-        else:
-            g.user = None
-            log.warn("The user is not currently logged...")
-
     def get_auth_functions(self):
         # we need to prevent some actions being authorized.
         return {
@@ -379,3 +277,313 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         # Add this plugin's templates dir to CKAN's extra_template_paths, so
         # that CKAN will use this plugin's custom templates.
         plugins.toolkit.add_template_directory(config, "templates")
+
+    def login(self):
+        log.debug("login")
+
+        # Log in attemps are fired when the user is not logged in and they click
+        # on the log in button
+
+        # Get the page where the user was when the loggin attemp was fired
+        # When the user is not logged in, he/she should be redirected to the dashboard when
+        # the system cannot get the previous page
+        came_from_url = _get_previous_page(constants.INITIAL_PAGE)
+
+        # This function is called by the log in function when the user is not logged in
+        state = generate_state(came_from_url)
+        oauth = OAuth2Session(
+            self.client_id, redirect_uri=self.redirect_uri, scope=self.scope, state=state
+        )
+        auth_url, _ = oauth.authorization_url(self.authorization_endpoint)
+        log.debug("Challenge: Redirecting challenge to page {0}".format(auth_url))
+        # CKAN 2.6 only supports bytes
+        # return toolkit.redirect_to(auth_url.encode("utf-8"))
+        return toolkit.redirect_to(auth_url)
+
+    def callback(self):
+        # this was originally in controller.py
+        try:
+            token = self.get_token()
+        except Exception as e:
+            print(e)
+
+        try:
+            user_name = self.authenticate(token)
+        except Exception as e:
+            print(e)
+
+        # create headers from remember token to be added to redirected response
+        remember_headers = self.remember(user_name)
+
+        self.update_token(user_name, token)
+        state = toolkit.request.params.get("state")
+        redirect = toolkit.redirect_to(get_came_from(state))
+
+        for header, value in remember_headers:
+            redirect.headers[header] = value
+
+        return redirect
+
+        """
+        # commenting this out to have smaller try/excepts
+        except Exception as e:
+            print(e)
+            session.save()
+
+            # If the callback is called with an error, we must show the message
+            # error_description = toolkit.request.GET.get("error_description")
+            error_description = toolkit.request.get_data("error_description")
+            print(error_description)
+            if not error_description:
+                if e.message:
+                    error_description = e.message
+                elif hasattr(e, "description") and e.description:
+                    error_description = e.description
+                elif hasattr(e, "error") and e.error:
+                    error_description = e.error
+                else:
+                    error_description = type(e).__name__
+
+            toolkit.response.status_int = 302
+            redirect_url = get_came_from(toolkit.request.params.get("state"))
+            redirect_url = "/" if redirect_url == constants.INITIAL_PAGE else redirect_url
+            toolkit.response.location = redirect_url
+            helpers.flash_error(error_description)
+
+        return
+        """
+
+    def identify(self):
+        log.debug("identify")
+
+        def _refresh_and_save_token(user_name):
+            new_token = self.refresh_token(user_name)
+            if new_token:
+                # toolkit.c.usertoken = new_token
+                toolkit.g.usertoken = new_token
+
+        environ = toolkit.request.environ
+        apikey = toolkit.request.headers.get(self.authorization_header, "")
+        user_name = None
+
+        if self.authorization_header == "authorization":
+            if apikey.startswith("Bearer "):
+                apikey = apikey[7:].strip()
+            else:
+                apikey = ""
+
+        # This API Key is not the one of CKAN, it's the one provided by the OAuth2 Service
+        if apikey:
+            try:
+                token = {"access_token": apikey}
+                user_name = self.authenticate(token)
+            except Exception:
+                pass
+
+        # If the authentication via API fails, we can still log in the user using session.
+        if user_name is None and "repoze.who.identity" in environ:
+            user_name = environ["repoze.who.identity"]["repoze.who.userid"]
+            log.info("User %s logged using session" % user_name)
+        # If we have been able to log in the user (via API or Session)
+        if user_name:
+            g.user = user_name
+            # toolkit.c.user = user_name
+            # toolkit.c.usertoken = self.oauth2helper.get_stored_token(user_name)
+            # toolkit.c.usertoken_refresh = partial(_refresh_and_save_token, user_name)
+            toolkit.g.user = user_name
+            toolkit.g.usertoken = self.get_stored_token(user_name)
+            toolkit.g.usertoken_refresh = partial(_refresh_and_save_token, user_name)
+        else:
+            g.user = None
+            log.warn("The user is not currently logged...")
+
+    def get_token(self):
+
+        oauth = OAuth2Session(self.client_id, redirect_uri=self.redirect_uri, scope=self.scope)
+        # Just because of FIWARE Authentication
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        if self.legacy_idm:
+            # This is only required for Keyrock v6 and v5
+            # headers['Authorization'] = 'Basic %s' % base64.urlsafe_b64encode(
+            #     '%s:%s' % (self.client_id, self.client_secret)
+            # )
+            authorization = "Basic " + self.client_id + ":" + self.client_secret
+            headers["Authorization"] = base64.urlsafe_b64encode(authorization.encode())
+
+        try:
+
+            # NOTE: authorization_response/tookkit.request.url was causing the error - using
+            # http instead of https
+            # hacked to replace http with https
+            authorization_response = toolkit.request.url
+            authorization_response = authorization_response.replace("http", "https")
+            token = oauth.fetch_token(
+                self.token_endpoint,
+                headers=headers,
+                client_secret=self.client_secret,
+                authorization_response=authorization_response,
+                verify=self.verify_https,
+            )
+        # NOTE: this exeption wasn't firing before even when there was an error, need to
+        # see what proper exception would be
+        except requests.exceptions.SSLError as e:
+            # TODO search a better way to detect invalid certificates
+            if "verify failed" in six.text_type(e):
+                raise InsecureTransportError()
+            else:
+                raise
+        return token
+
+    def authenticate(self, token):
+        # this had been the oauth2.py Oauth2Helper method identify()
+
+        if self.jwt_enable:
+
+            access_token = token["access_token"]
+            user_data = jwt.decode(access_token, verify=False)
+            user = self.user_json(user_data)
+        else:
+
+            try:
+                if self.legacy_idm:
+                    profile_response = requests.get(
+                        self.profile_api_url + "?access_token=%s" % token["access_token"],
+                        verify=self.verify_https,
+                    )
+                else:
+                    oauth = OAuth2Session(self.client_id, token=token)
+                    profile_response = oauth.get(self.profile_api_url, verify=self.verify_https)
+
+            except requests.exceptions.SSLError as e:
+                # TODO search a better way to detect invalid certificates
+                if "verify failed" in six.text_type(e):
+                    raise InsecureTransportError()
+                else:
+                    raise
+
+            # Token can be invalid
+            if not profile_response.ok:
+                error = profile_response.json()
+                if error.get("error", "") == "invalid_token":
+                    raise ValueError(error.get("error_description"))
+                else:
+                    profile_response.raise_for_status()
+            else:
+                user_data = profile_response.json()
+                user = self.user_json(user_data)
+
+        # Save the user in the database
+        model.Session.add(user)
+        model.Session.commit()
+        model.Session.remove()
+
+        return user.name
+
+    def user_json(self, user_data):
+        email = user_data[self.profile_api_mail_field]
+        user_name = user_data[self.profile_api_user_field]
+
+        # In CKAN can exists more than one user associated with the same email
+        # Some providers, like Google and FIWARE only allows one account per email
+        user = None
+        users = model.User.by_email(email)
+        if len(users) == 1:
+            user = users[0]
+
+        # If the user does not exist, we have to create it...
+        if user is None:
+            user = model.User(email=email)
+
+        # Now we update his/her user_name with the one provided by the OAuth2 service
+        # In the future, users will be obtained based on this field
+        user.name = user_name
+
+        # Update fullname
+        if self.profile_api_fullname_field != "" and self.profile_api_fullname_field in user_data:
+            user.fullname = user_data[self.profile_api_fullname_field]
+
+        # Update sysadmin status
+        if (
+            self.profile_api_groupmembership_field != ""
+            and self.profile_api_groupmembership_field in user_data
+        ):
+            user.sysadmin = (
+                self.sysadmin_group_name in user_data[self.profile_api_groupmembership_field]
+            )
+
+        return user
+
+    def _get_rememberer(self, environ):
+        plugins = environ.get("repoze.who.plugins", {})
+        return plugins.get(self.rememberer_name)
+
+    def remember(self, user_name):
+        """
+        Remember the authenticated identity.
+
+        This method simply delegates to another IIdentifier plugin if configured.
+        """
+        log.debug("Repoze OAuth remember")
+        environ = toolkit.request.environ
+        rememberer = self._get_rememberer(environ)
+        identity = {"repoze.who.userid": user_name}
+        headers = rememberer.remember(environ, identity)
+
+        return headers
+
+    def get_stored_token(self, user_name):
+        user_token = db.UserToken.by_user_name(user_name=user_name)
+        if user_token:
+            return {
+                "access_token": user_token.access_token,
+                "refresh_token": user_token.refresh_token,
+                "expires_in": user_token.expires_in,
+                "token_type": user_token.token_type,
+            }
+
+    def update_token(self, user_name, token):
+
+        user_token = db.UserToken.by_user_name(user_name=user_name)
+        # Create the user if it does not exist
+        if not user_token:
+            user_token = db.UserToken()
+            user_token.user_name = user_name
+        # Save the new token
+        user_token.access_token = token["access_token"]
+        user_token.token_type = token["token_type"]
+        user_token.refresh_token = token.get("refresh_token")
+        if "expires_in" in token:
+            user_token.expires_in = token["expires_in"]
+        else:
+            access_token = jwt.decode(user_token.access_token, verify=False)
+            user_token.expires_in = access_token["exp"] - access_token["iat"]
+
+        model.Session.add(user_token)
+        model.Session.commit()
+
+    def refresh_token(self, user_name):
+        token = self.get_stored_token(user_name)
+        if token:
+            client = OAuth2Session(self.client_id, token=token, scope=self.scope)
+            try:
+                token = client.refresh_token(
+                    self.token_endpoint,
+                    client_secret=self.client_secret,
+                    client_id=self.client_id,
+                    verify=self.verify_https,
+                )
+            except requests.exceptions.SSLError as e:
+                # TODO search a better way to detect invalid certificates
+                if "verify failed" in six.text_type(e):
+                    raise InsecureTransportError()
+                else:
+                    raise
+            self.update_token(user_name, token)
+            log.info("Token for user %s has been updated properly" % user_name)
+            return token
+        else:
+            log.warn("User %s has no refresh token" % user_name)

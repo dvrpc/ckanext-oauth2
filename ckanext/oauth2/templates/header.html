@@ -2,7 +2,7 @@
 
 {% if header_account_notlogged is defined %}
     {% block header_account_notlogged %}
-    <li><a href="{% url_for('oauth2.login') %}">Log innnnn</li>
+    <li><a href="{% url_for('oauth2.login') %}">Log in</li>
     <li><a href="{% url_for('user.register') %}">Register</li>
     {#
     <li>{% link_for _('Log in'), controller='user', action='login' %}</li>
