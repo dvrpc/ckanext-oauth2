@@ -313,7 +313,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         def _refresh_and_save_token(user_name):
             new_token = self.refresh_token(user_name)
             if new_token:
-                # toolkit.c.usertoken = new_token
                 toolkit.g.usertoken = new_token
 
         environ = toolkit.request.environ
@@ -341,9 +340,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         # If we have been able to log in the user (via API or Session)
         if user_name:
             g.user = user_name
-            # toolkit.c.user = user_name
-            # toolkit.c.usertoken = self.oauth2helper.get_stored_token(user_name)
-            # toolkit.c.usertoken_refresh = partial(_refresh_and_save_token, user_name)
             toolkit.g.user = user_name
             toolkit.g.usertoken = self.get_stored_token(user_name)
             toolkit.g.usertoken_refresh = partial(_refresh_and_save_token, user_name)
