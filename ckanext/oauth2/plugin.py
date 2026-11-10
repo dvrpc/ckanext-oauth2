@@ -118,7 +118,6 @@ def get_previous_page(default_page=INITIAL_PAGE):
 
 
 class OAuth2Plugin(plugins.SingletonPlugin):
-
     plugins.implements(plugins.IAuthenticator, inherit=True)
     plugins.implements(plugins.IAuthFunctions, inherit=True)
     plugins.implements(plugins.IBlueprint)
@@ -128,6 +127,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         """Store the OAuth 2 client configuration"""
         log.debug("Init OAuth2 extension")
 
+        self.name = "oauth2"
         self.verify_https = os.environ.get("OAUTHLIB_INSECURE_TRANSPORT", "") == ""
 
         if self.verify_https and os.environ.get("REQUESTS_CA_BUNDLE", "").strip() != "":
@@ -376,7 +376,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             user_data = jwt.decode(access_token, verify=False)
             user = self.user_json(user_data)
         else:
-
             try:
                 oauth = OAuth2Session(self.client_id, token=token)
                 profile_response = oauth.get(self.profile_api_url, verify=self.verify_https)

@@ -21,6 +21,9 @@ import sqlalchemy as sa
 
 UserToken = None
 
+from ckan.common import config
+from ckan.model import meta
+
 
 def init_db(model):
 
@@ -44,7 +47,11 @@ def init_db(model):
             sa.Column("expires_in", sa.types.UnicodeText),
         )
 
-        # Create the table only if it does not exist
-        user_token_table.create(checkfirst=True)
+        db_uri = config.get("sqlalchemy.url")
+        engine = sa.create_engine(db_uri, echo=False)
+        model.init_model(engine)
 
-        model.meta.mapper(UserToken, user_token_table)
+        # Create the table only if it does not exist
+        user_token_table.create(bind=meta.engine, checkfirst=True)
+
+        model.meta.registry.map_imperatively(UserToken, user_token_table)
