@@ -98,7 +98,7 @@ def request_reset(context, data_dict):
 
 def get_previous_page(default_page=INITIAL_PAGE):
     """Get page user attempts to log in from, or dashboard if unable to/in certain circumstances."""
-    if "came_from" not in toolkit.request.params:
+    if not toolkit.request.args.get("came_from", ""):
         came_from_url = toolkit.request.headers.get("Referer", default_page)
     else:
         came_from_url = toolkit.request.params.get("came_from", default_page)
@@ -406,10 +406,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         # In CKAN can exists more than one user associated with the same email
         # Some providers, like Google and FIWARE only allows one account per email
-        user = None
-        users = model.User.by_email(email)
-        if len(users) == 1:
-            user = users[0]
+        user = model.User.by_email(email)
 
         # If the user does not exist, we have to create it...
         if user is None:
@@ -448,6 +445,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         """
         log.debug("Repoze OAuth remember")
         environ = toolkit.request.environ
+        # Error starts here - returning None; need to rely on Flask-Login instead of Repoze.
         rememberer = self._get_rememberer(environ)
         identity = {"repoze.who.userid": user_name}
         headers = rememberer.remember(environ, identity)
