@@ -101,7 +101,7 @@ def get_previous_page(default_page=INITIAL_PAGE):
     if not toolkit.request.args.get("came_from", ""):
         came_from_url = toolkit.request.headers.get("Referer", default_page)
     else:
-        came_from_url = toolkit.request.params.get("came_from", default_page)
+        came_from_url = toolkit.request.args.get("came_from", default_page)
 
     came_from_url_parsed = urlparse(came_from_url)
 
@@ -161,11 +161,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         self.scope = os.environ.get(
             "CKAN_OAUTH2_SCOPE", toolkit.config.get("ckan.oauth2.scope", "")
-        ).strip()
-
-        self.rememberer_name = os.environ.get(
-            "CKAN_OAUTH2_REMEMBER_NAME",
-            toolkit.config.get("ckan.oauth2.rememberer_name", "auth_tkt"),
         ).strip()
 
         self.profile_api_user_field = os.environ.get(
@@ -283,29 +278,23 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         log.debug("callback")
         try:
             token = self.get_token()
+            user_name = self.authenticate_token(token)
         except InsecureTransportError as e:
             log.warn(f"Error in getting token: {e}")
             helpers.flash_error("Authentication error; please contact the administrator.")
             return toolkit.redirect_to("/")
 
-        try:
-            user_name = self.authenticate(token)
-        except InsecureTransportError as e:
-            log.warn(f"Error authenticating user: {e}")
+        self.update_token(user_name, token)
+
+        user_obj = model.User.by_name(user_name)
+        if user_obj is None or user_obj.state != "active":
             helpers.flash_error("Authentication error; please contact the administrator.")
             return toolkit.redirect_to("/")
 
-        # create headers from remember token to be added to redirected response
-        remember_headers = self.remember(user_name)
+        toolkit.login_user(user_obj)
 
-        self.update_token(user_name, token)
-        state = toolkit.request.params.get("state")
-        redirect = toolkit.redirect_to(get_came_from(state))
-
-        for header, value in remember_headers:
-            redirect.headers[header] = value
-
-        return redirect
+        state = toolkit.request.args.get("state")
+        return toolkit.redirect_to(get_came_from(state))
 
     def identify(self):
         log.debug("identify")
@@ -329,13 +318,13 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         if apikey:
             try:
                 token = {"access_token": apikey}
-                user_name = self.authenticate(token)
+                user_name = self.authenticate_token(token)
             except Exception:
                 pass
 
         # If the authentication via API fails, we can still log in the user using session.
-        if user_name is None and "repoze.who.identity" in environ:
-            user_name = environ["repoze.who.identity"]["repoze.who.userid"]
+        if user_name is None and toolkit.current_user.is_authenticated:
+            user_name = toolkit.current_user.name
             log.info(f"User {user_name} logged using session")
         # If we have been able to log in the user (via API or Session)
         if user_name:
@@ -344,7 +333,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
             toolkit.g.usertoken = self.get_stored_token(user_name)
             toolkit.g.usertoken_refresh = partial(_refresh_and_save_token, user_name)
         else:
-            g.user = None
             log.warn("The user is not currently logged in...")
 
     def get_token(self):
@@ -368,12 +356,12 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         return token
 
-    def authenticate(self, token):
+    def authenticate_token(self, token):
         log.debug("authenticate")
 
         if self.jwt_enable:
             access_token = token["access_token"]
-            user_data = jwt.decode(access_token, verify=False)
+            user_data = jwt.decode(access_token, options={"verify_signature": False})
             user = self.user_json(user_data)
         else:
             try:
@@ -431,27 +419,6 @@ class OAuth2Plugin(plugins.SingletonPlugin):
 
         return user
 
-    def _get_rememberer(self, environ):
-        plugins = environ.get("repoze.who.plugins", {})
-        return plugins.get(self.rememberer_name)
-
-    def remember(self, user_name):
-        """
-        Remember the authenticated identity.
-
-        This method simply delegates to another IIdentifier plugin if configured.
-
-        Return headers so they can be added to redirected response.
-        """
-        log.debug("Repoze OAuth remember")
-        environ = toolkit.request.environ
-        # Error starts here - returning None; need to rely on Flask-Login instead of Repoze.
-        rememberer = self._get_rememberer(environ)
-        identity = {"repoze.who.userid": user_name}
-        headers = rememberer.remember(environ, identity)
-
-        return headers
-
     def get_stored_token(self, user_name):
         user_token = db.UserToken.by_user_name(user_name=user_name)
         if user_token:
@@ -477,7 +444,7 @@ class OAuth2Plugin(plugins.SingletonPlugin):
         if "expires_in" in token:
             user_token.expires_in = token["expires_in"]
         else:
-            access_token = jwt.decode(user_token.access_token, verify=False)
+            access_token = jwt.decode(user_token.access_token, options={"verify_signature": False})
             user_token.expires_in = access_token["exp"] - access_token["iat"]
 
         model.Session.add(user_token)
